@@ -516,7 +516,7 @@ def main():
         yolo_model="yolov8n.pt",
         ollama_base_url="http://localhost:11434",
         deepseek_model="deepseek-r1:1.5b",
-        show_preview=False  # Disable preview to avoid threading issues
+        show_preview=True  # Disable preview to avoid threading issues
     )
 
     print("🎯 Unified Video Reasoning Pipeline")
