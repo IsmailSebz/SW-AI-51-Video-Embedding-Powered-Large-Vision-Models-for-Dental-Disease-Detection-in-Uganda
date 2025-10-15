@@ -1,29 +1,23 @@
 #!/usr/bin/env python3
 """
-Unified Video Reasoning Pipeline with DeepSeek via Ollama - FIXED VERSION
-Author: Research Assistant
-Description: Processes video through YOLO for real-time detection and uses DeepSeek via Ollama for reasoning
+Unified Video Reasoning Pipeline with DeepSeek via Ollama
+Senior Software Engineer Edition: Preview Mode with Manual Recording Start
 """
 
 import cv2
 import time
 import json
-import subprocess
-import threading
 from collections import defaultdict, deque
-from typing import List, Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import requests
 import numpy as np
 from ultralytics import YOLO
-import os
-import queue
 
 
 class UnifiedVideoReasoner:
-    def __init__(self, yolo_model: str = "./models/runs/detect/train/weights/best.pt",
+    def __init__(self, yolo_model: str = "yolov8n.pt",
                  ollama_base_url: str = "http://localhost:11434",
-                 deepseek_model: str = "deepseek-r1:1.5b",
-                 show_preview: bool = True):
+                 deepseek_model: str = "deepseek-r1:1.5b"):
         """
         Initialize the unified video reasoning pipeline
 
@@ -31,7 +25,6 @@ class UnifiedVideoReasoner:
             yolo_model: Path to YOLO model or model name
             ollama_base_url: Base URL for Ollama API
             deepseek_model: DeepSeek model name in Ollama
-            show_preview: Whether to show real-time preview (can cause issues on some systems)
         """
         # Initialize YOLO model
         print("🚀 Loading YOLO model...")
@@ -40,9 +33,9 @@ class UnifiedVideoReasoner:
         # Ollama configuration
         self.ollama_url = ollama_base_url
         self.deepseek_model = deepseek_model
-        self.show_preview = show_preview
 
         # State management
+        self.is_previewing = False
         self.is_recording = False
         self.is_processing = False
 
@@ -51,9 +44,10 @@ class UnifiedVideoReasoner:
         self.frame_buffer = deque(maxlen=30)
         self.video_info = {}
 
-        # Thread-safe communication
-        self.preview_queue = queue.Queue(maxsize=1)
-        self.stop_preview = threading.Event()
+        # Recording control
+        self.recording_start_time = 0
+        self.recording_duration = 0
+        self.output_path = ""
 
         # Verify Ollama connection and model
         self._verify_ollama_setup()
@@ -80,42 +74,6 @@ class UnifiedVideoReasoner:
 
         except requests.exceptions.ConnectionError:
             raise Exception("Cannot connect to Ollama. Make sure Ollama is running on localhost:11434")
-        except requests.exceptions.Timeout:
-            raise Exception("Ollama connection timeout. Make sure Ollama is running and accessible.")
-
-    def _preview_thread(self):
-        """Dedicated thread for handling OpenCV preview window"""
-        print("👀 Starting preview thread...")
-        window_name = 'Recording - Press q to stop early'
-
-        while not self.stop_preview.is_set():
-            try:
-                # Get frame from queue with timeout
-                frame_data = self.preview_queue.get(timeout=0.1)
-                if frame_data is None:
-                    break
-
-                frame, frame_count = frame_data
-
-                # Display frame
-                cv2.imshow(window_name, frame)
-
-                # Check for key press (non-blocking)
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord('q') or key == 27:  # 'q' or ESC
-                    print("⏹️  Stopping recording via user input...")
-                    self.is_recording = False
-                    break
-
-            except queue.Empty:
-                continue
-            except Exception as e:
-                print(f"⚠️  Preview error: {e}")
-                break
-
-        # Cleanup
-        cv2.destroyAllWindows()
-        print("✅ Preview thread stopped")
 
     def _call_deepseek(self, prompt: str, max_tokens: int = 512) -> str:
         """Call DeepSeek model through Ollama API"""
@@ -144,160 +102,190 @@ class UnifiedVideoReasoner:
         except requests.exceptions.RequestException as e:
             return f"Error calling DeepSeek: {str(e)}"
 
-    def start_recording(self, video_source: Any = 0, duration: int = 10,
-                        output_path: str = "recorded_video.mp4") -> None:
-        """Start recording video with real-time YOLO processing"""
-        if self.is_recording:
-            print("⚠️  Recording already in progress")
+    def start_preview(self, video_source: Any = 0, output_path: str = "recorded_video.mp4") -> None:
+        """
+        Start preview mode - shows camera feed with YOLO detections
+        Press 's' to start recording, 'q' to quit
+
+        Args:
+            video_source: Camera index, video file, or RTSP stream
+            output_path: Path to save recorded video
+        """
+        if self.is_previewing or self.is_recording:
+            print("⚠️  Preview or recording already in progress")
             return
 
-        print(f"🎥 Starting recording for {duration} seconds...")
-        self.is_recording = True
-        self.stop_preview.clear()
-        self.detection_history.clear()
-        self.frame_buffer.clear()
+        print("🎬 Starting preview mode...")
+        print("📝 Controls:")
+        print("   Press 's' - Start recording")
+        print("   Press 'q' - Quit preview")
+        print("   Press 'r' - Stop recording (while recording)")
+
+        self.is_previewing = True
+        self.output_path = output_path
 
         # Initialize video capture
-        self.cap = cv2.VideoCapture(video_source)
-        if not self.cap.isOpened():
+        cap = cv2.VideoCapture(video_source)
+        if not cap.isOpened():
             raise Exception(f"Could not open video source: {video_source}")
 
         # Get video properties
-        frame_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        frame_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps = int(self.cap.get(cv2.CAP_PROP_FPS)) or 30
+        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = int(cap.get(cv2.CAP_PROP_FPS)) or 30
 
-        self.video_info = {
-            'width': frame_width,
-            'height': frame_height,
-            'fps': fps,
-            'duration': duration
-        }
-
-        # Initialize video writer
+        # Initialize video writer (will be used when recording starts)
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        self.out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
+        out = None
 
-        # Start preview thread if enabled
-        if self.show_preview:
-            self.preview_thread = threading.Thread(target=self._preview_thread)
-            self.preview_thread.daemon = True
-            self.preview_thread.start()
-
-        # Start recording thread
-        self.recording_thread = threading.Thread(
-            target=self._record_video,
-            args=(duration,)
-        )
-        self.recording_thread.daemon = True
-        self.recording_thread.start()
-
-    def _record_video(self, duration: int) -> None:
-        """Record video with real-time YOLO processing (MAIN FIX)"""
-        start_time = time.time()
+        # Preview loop
         frame_count = 0
+        recording_frame_count = 0
 
         try:
-            while self.is_recording and (time.time() - start_time) < duration:
-                ret, frame = self.cap.read()
+            while self.is_previewing:
+                ret, frame = cap.read()
                 if not ret:
                     print("❌ Failed to read frame from video source")
                     break
 
-                # Store frame
-                self.frame_buffer.append({
-                    'frame': frame.copy(),
-                    'timestamp': time.time() - start_time,
-                    'frame_id': frame_count
-                })
-
                 # Run YOLO inference
-                try:
-                    results = self.yolo_model(frame, verbose=False, conf=0.5)
-                except Exception as e:
-                    print(f"❌ YOLO inference error: {e}")
+                results = self.yolo_model(frame, verbose=False, conf=0.5)
+                annotated_frame = results[0].plot()
+
+                # Add recording status to display
+                status_text = "RECORDING" if self.is_recording else "PREVIEW - Press 's' to start recording"
+                status_color = (0, 0, 255) if self.is_recording else (0, 255, 0)
+
+                cv2.putText(annotated_frame, status_text, (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2)
+
+                if self.is_recording:
+                    # Add recording timer
+                    elapsed_time = time.time() - self.recording_start_time
+                    timer_text = f"Time: {elapsed_time:.1f}s | Frames: {recording_frame_count}"
+                    cv2.putText(annotated_frame, timer_text, (10, 60),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+                # Display frame
+                cv2.imshow('Video Preview - Press s to record, q to quit', annotated_frame)
+
+                # Handle key presses
+                key = cv2.waitKey(1) & 0xFF
+
+                if key == ord('q'):
+                    print("⏹️  Quitting preview...")
                     break
 
-                # Process detections
-                detections = []
-                if len(results) > 0 and results[0].boxes is not None:
-                    for box in results[0].boxes:
-                        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                        conf = box.conf[0].cpu().numpy()
-                        cls = int(box.cls[0].cpu().numpy())
-                        class_name = results[0].names[cls]
+                elif key == ord('s') and not self.is_recording:
+                    # Start recording
+                    self._start_recording(cap, out, fourcc, frame_width, frame_height, fps)
+                    recording_frame_count = 0
+                    print("🔴 Recording started! Press 'r' to stop recording.")
 
-                        detection = {
-                            'frame_id': frame_count,
-                            'timestamp': time.time() - start_time,
-                            'class_name': class_name,
-                            'confidence': float(conf),
-                            'bbox': [float(x1), float(y1), float(x2), float(y2)],
-                            'class_id': cls
-                        }
-                        detections.append(detection)
+                elif key == ord('r') and self.is_recording:
+                    # Stop recording but continue preview
+                    self._stop_recording(out)
+                    print("⏹️  Recording stopped. Press 's' to record again or 'q' to quit.")
 
-                        # Store in history
-                        self.detection_history[class_name].append({
-                            'frame_id': frame_count,
-                            'timestamp': time.time() - start_time,
-                            'bbox': [float(x1), float(y1), float(x2), float(y2)],
-                            'confidence': float(conf)
-                        })
+                # If recording, process and store frames
+                if self.is_recording:
+                    if out is None:
+                        # Initialize video writer on first recording frame
+                        out = cv2.VideoWriter(self.output_path, fourcc, fps, (frame_width, frame_height))
 
-                # Create annotated frame
-                try:
-                    annotated_frame = results[0].plot()
+                    # Write frame
+                    out.write(annotated_frame)
 
-                    # Write to video file
-                    self.out.write(annotated_frame)
-
-                    # Send to preview thread if enabled
-                    if self.show_preview and not self.preview_queue.full():
-                        try:
-                            self.preview_queue.put((annotated_frame, frame_count), timeout=0.01)
-                        except queue.Full:
-                            pass  # Skip frame if queue is full
-
-                except Exception as e:
-                    print(f"⚠️  Frame annotation error: {e}")
-                    # Still write original frame if annotation fails
-                    self.out.write(frame)
+                    # Process and store detections
+                    self._process_detections(results, frame_count, recording_frame_count)
+                    recording_frame_count += 1
 
                 frame_count += 1
 
-                # Small delay to prevent overwhelming the system
-                time.sleep(0.01)
-
         except Exception as e:
-            print(f"❌ Recording error: {e}")
+            print(f"❌ Preview error: {e}")
 
         finally:
             # Cleanup
-            self.is_recording = False
-            self.stop_preview.set()
+            self.is_previewing = False
+            if self.is_recording:
+                self._stop_recording(out)
+            cap.release()
+            if out is not None:
+                out.release()
+            cv2.destroyAllWindows()
+            print("✅ Preview session ended")
 
-            if hasattr(self, 'cap'):
-                self.cap.release()
-            if hasattr(self, 'out'):
-                self.out.release()
+    def _start_recording(self, cap, out, fourcc, width, height, fps):
+        """Start recording session"""
+        self.is_recording = True
+        self.recording_start_time = time.time()
+        self.detection_history.clear()
+        self.frame_buffer.clear()
 
-            # Signal preview thread to stop
-            if self.show_preview:
-                try:
-                    self.preview_queue.put(None, timeout=0.1)
-                except queue.Full:
-                    pass
+        # Store video info
+        self.video_info = {
+            'width': width,
+            'height': height,
+            'fps': fps,
+            'start_time': self.recording_start_time
+        }
 
-            print(f"✅ Recording completed. Processed {frame_count} frames.")
-            print(f"📊 Detected {len(self.detection_history)} object types")
+        print("🔴 Recording started!")
 
-    def stop_recording(self) -> None:
-        """Stop recording manually"""
-        if self.is_recording:
-            self.is_recording = False
-            self.stop_preview.set()
-            print("⏹️  Recording stopped manually")
+    def _stop_recording(self, out):
+        """Stop recording session"""
+        self.is_recording = False
+        recording_duration = time.time() - self.recording_start_time
+
+        if out is not None:
+            out.release()
+
+        self.video_info['duration'] = recording_duration
+        self.video_info['end_time'] = time.time()
+
+        print(f"⏹️  Recording stopped. Duration: {recording_duration:.1f}s")
+        print(f"📊 Detected {len(self.detection_history)} object types")
+
+    def _process_detections(self, results, global_frame_count, recording_frame_count):
+        """Process and store detection data"""
+        if len(results) > 0 and results[0].boxes is not None:
+            for box in results[0].boxes:
+                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                conf = box.conf[0].cpu().numpy()
+                cls = int(box.cls[0].cpu().numpy())
+                class_name = results[0].names[cls]
+
+                detection_data = {
+                    'global_frame_id': global_frame_count,
+                    'recording_frame_id': recording_frame_count,
+                    'timestamp': time.time() - self.recording_start_time,
+                    'class_name': class_name,
+                    'confidence': float(conf),
+                    'bbox': [float(x1), float(y1), float(x2), float(y2)],
+                    'class_id': cls
+                }
+
+                # Store in history
+                self.detection_history[class_name].append(detection_data)
+
+                # Store in frame buffer
+                self.frame_buffer.append(detection_data)
+
+    def start_preview_with_duration(self, video_source: Any = 0, duration: int = 10,
+                                    output_path: str = "recorded_video.mp4") -> None:
+        """
+        Start preview with automatic recording duration
+
+        Args:
+            video_source: Camera index, video file, or RTSP stream
+            duration: Recording duration in seconds (after pressing 's')
+            output_path: Path to save recorded video
+        """
+        self.recording_duration = duration
+        print(f"⏰ Recording duration set to {duration} seconds")
+        self.start_preview(video_source, output_path)
 
     def _create_detection_summary(self) -> Dict[str, Any]:
         """Create comprehensive summary of detected objects"""
@@ -367,9 +355,6 @@ class UnifiedVideoReasoner:
 
     def analyze_video(self, question: str = None) -> Dict[str, Any]:
         """Analyze the recorded video using DeepSeek"""
-        if self.is_recording:
-            return {"error": "Recording in progress. Please stop recording first."}
-
         if not self.detection_history:
             return {"error": "No detection data available. Please record a video first."}
 
@@ -425,7 +410,7 @@ class UnifiedVideoReasoner:
         prompt = f"""You are a video analysis expert. Analyze the object detection results from a video recording and provide insightful reasoning.
 
 VIDEO CONTEXT:
-Recording Duration: {detection_summary.get('recording_duration', 0)} seconds
+Recording Duration: {detection_summary.get('recording_duration', 0):.1f} seconds
 Total Detections: {detection_summary.get('total_objects_detected', 0)}
 Unique Object Types: {detection_summary.get('unique_object_types', 0)}
 
@@ -491,11 +476,20 @@ Reason step by step and be factual based on the detection data:"""
         print(f"   Total objects detected: {results['detection_summary']['total_objects_detected']}")
         print(f"   Unique object types: {results['detection_summary']['unique_object_types']}")
 
+        # Show top 5 objects
+        print(f"\n🏆 TOP OBJECTS:")
+        for i, obj in enumerate(results['detection_summary']['objects'][:5]):
+            print(f"   {i + 1}. {obj['object']}: {obj['count']} appearances")
+
         print(f"\n🏃 ACTIVITY PATTERNS:")
+        patterns_printed = False
         for pattern_type, objects in results['activity_patterns'].items():
             if objects:
                 readable_type = pattern_type.replace('_', ' ').title()
                 print(f"   {readable_type}: {', '.join(objects)}")
+                patterns_printed = True
+        if not patterns_printed:
+            print("   No significant patterns detected")
 
         print(f"\n🧠 DEEPSEEK ANALYSIS:")
         print(f"{results['analysis']}")
@@ -508,86 +502,130 @@ Reason step by step and be factual based on the detection data:"""
             json.dump(results, f, indent=2, ensure_ascii=False)
         print(f"✅ Analysis report saved to {filename}")
 
+    def get_recording_status(self) -> Dict[str, Any]:
+        """Get current recording status and statistics"""
+        status = {
+            'is_previewing': self.is_previewing,
+            'is_recording': self.is_recording,
+            'is_processing': self.is_processing,
+            'detection_history_size': len(self.detection_history),
+            'frame_buffer_size': len(self.frame_buffer)
+        }
+
+        if self.is_recording:
+            status['recording_elapsed'] = time.time() - self.recording_start_time
+            status['recording_duration'] = self.recording_duration
+
+        return status
+
 
 def main():
-    """Main function demonstrating the pipeline"""
-    # Initialize with preview disabled to avoid threading issues
+    """Main function demonstrating the refined pipeline"""
+    # Initialize the reasoner
     reasoner = UnifiedVideoReasoner(
         yolo_model="yolov8n.pt",
         ollama_base_url="http://localhost:11434",
-        deepseek_model="deepseek-r1:1.5b",
-        show_preview=True  # Disable preview to avoid threading issues
+        deepseek_model="deepseek-r1:1.5b"
     )
 
-    print("🎯 Unified Video Reasoning Pipeline")
-    print("Options:")
-    print("1. Record from webcam (no preview - safer)")
-    print("2. Record from webcam (with preview - may cause issues)")
-    print("3. Record from video file")
-    print("4. Analyze existing recording")
+    print("🎯 UNIFIED VIDEO REASONING PIPELINE")
+    print("=" * 50)
+    print("Senior Software Engineer Edition")
+    print("Features:")
+    print("  • Real-time preview with YOLO detection")
+    print("  • Manual recording control (press 's' to start)")
+    print("  • Interactive analysis with DeepSeek")
+    print("  • Professional status display")
+    print("=" * 50)
 
-    choice = input("\nEnter your choice (1-4): ").strip()
+    while True:
+        print("\n📋 MAIN MENU:")
+        print("1. Start Preview (Manual Recording Control)")
+        print("2. Start Preview with Duration (Auto-stop recording)")
+        print("3. Analyze Last Recording")
+        print("4. Interactive Analysis Session")
+        print("5. Show Recording Status")
+        print("6. Exit")
 
-    if choice == "1":
-        # Webcam recording without preview
-        reasoner.show_preview = False
-        duration = int(input("Enter recording duration in seconds (default 10): ") or "10")
-        reasoner.start_recording(video_source=0, duration=duration)
-        print("📹 Recording... (press Ctrl+C to stop early)")
+        choice = input("\nEnter your choice (1-6): ").strip()
 
-    elif choice == "2":
-        # Webcam recording with preview
-        reasoner.show_preview = True
-        duration = int(input("Enter recording duration in seconds (default 10): ") or "10")
-        reasoner.start_recording(video_source=0, duration=duration)
-        print("📹 Recording... (press 'q' in preview window to stop early)")
+        if choice == "1":
+            # Manual recording control
+            output_file = input("Enter output filename (default: recorded_video.mp4): ").strip()
+            if not output_file:
+                output_file = "recorded_video.mp4"
 
-    elif choice == "3":
-        # Video file processing
-        video_file = input("Enter path to video file: ").strip()
-        if not os.path.exists(video_file):
-            print("❌ Video file not found!")
-            return
+            print(f"\n🚀 Starting preview mode...")
+            print("   Press 's' to start recording")
+            print("   Press 'r' to stop recording")
+            print("   Press 'q' to quit preview")
 
-        print("📹 Processing video file...")
-        reasoner.show_preview = False
-        reasoner.start_recording(video_source=video_file, duration=3600)
-        time.sleep(2)
-        reasoner.stop_recording()
+            reasoner.start_preview(
+                video_source=0,  # Default camera
+                output_path=output_file
+            )
 
-    elif choice == "4":
-        # Analyze existing data
-        pass
-    else:
-        print("❌ Invalid choice!")
-        return
+        elif choice == "2":
+            # Preview with duration
+            duration = int(input("Enter recording duration in seconds (default: 10): ") or "10")
+            output_file = input("Enter output filename (default: recorded_video.mp4): ").strip()
+            if not output_file:
+                output_file = "recorded_video.mp4"
 
-    # Wait for recording to complete
-    if choice in ['1', '2', '3']:
-        while reasoner.is_recording:
-            time.sleep(1)
-        print("✅ Recording finished!")
+            print(f"\n🚀 Starting preview with {duration}s recording...")
+            print("   Press 's' to start recording (auto-stops after {duration}s)")
+            print("   Press 'q' to quit preview")
 
-    # Perform analysis
-    if reasoner.detection_history:
-        print("\n" + "=" * 50)
-        custom_question = input("Enter your analysis question (or press Enter for general analysis): ").strip()
+            reasoner.start_preview_with_duration(
+                video_source=0,
+                duration=duration,
+                output_path=output_file
+            )
 
-        results = reasoner.analyze_video(custom_question if custom_question else None)
+        elif choice == "3":
+            # Analyze last recording
+            if not reasoner.detection_history:
+                print("❌ No recording data available. Please record a video first.")
+                continue
 
-        if 'error' not in results:
-            reasoner._print_results(results)
+            question = input("Enter your analysis question (or press Enter for general analysis): ").strip()
 
-            save = input("\n💾 Save analysis report? (y/n): ").strip().lower()
-            if save == 'y':
-                filename = input("Enter filename (default: video_analysis_report.json): ").strip()
-                reasoner.save_analysis_report(results, filename or "video_analysis_report.json")
+            results = reasoner.analyze_video(question if question else None)
 
-            interactive = input("\n🔍 Start interactive Q&A session? (y/n): ").strip().lower()
-            if interactive == 'y':
-                reasoner.interactive_analysis()
-    else:
-        print("❌ No detection data available for analysis.")
+            if 'error' not in results:
+                reasoner._print_results(results)
+
+                save = input("\n💾 Save analysis report? (y/n): ").strip().lower()
+                if save == 'y':
+                    filename = input("Enter filename (default: analysis_report.json): ").strip()
+                    reasoner.save_analysis_report(results, filename or "analysis_report.json")
+
+        elif choice == "4":
+            # Interactive analysis
+            if not reasoner.detection_history:
+                print("❌ No recording data available. Please record a video first.")
+                continue
+            reasoner.interactive_analysis()
+
+        elif choice == "5":
+            # Show status
+            status = reasoner.get_recording_status()
+            print(f"\n📊 CURRENT STATUS:")
+            print(f"   Preview Active: {status['is_previewing']}")
+            print(f"   Recording Active: {status['is_recording']}")
+            print(f"   Processing Active: {status['is_processing']}")
+            print(f"   Objects Detected: {status['detection_history_size']} types")
+            print(f"   Frames in Buffer: {status['frame_buffer_size']}")
+
+            if status['is_recording']:
+                print(f"   Recording Time: {status['recording_elapsed']:.1f}s")
+
+        elif choice == "6":
+            print("👋 Exiting...")
+            break
+
+        else:
+            print("❌ Invalid choice! Please enter 1-6.")
 
 
 if __name__ == "__main__":
