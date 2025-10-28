@@ -93,9 +93,9 @@ class UnifiedVideoReasoner:
         try:
             response = requests.post(
                 f"{self.ollama_url}/api/generate",
-                json=payload,
-                timeout=120
+                json=payload
             )
+            print(response.json())
             response.raise_for_status()
             return response.json().get('response', '').strip()
 
@@ -266,7 +266,6 @@ class UnifiedVideoReasoner:
                     'bbox': [float(x1), float(y1), float(x2), float(y2)],
                     'class_id': cls
                 }
-
                 # Store in history
                 self.detection_history[class_name].append(detection_data)
 
@@ -407,7 +406,7 @@ class UnifiedVideoReasoner:
                 readable_type = pattern_type.replace('_', ' ').title()
                 pattern_descriptions.append(f"- {readable_type}: {', '.join(objects)}")
 
-        prompt = f"""You are a video analysis expert. Analyze the object detection results from a video recording and provide insightful reasoning.
+        prompt = f"""You are a dental expert AI assistant analyzing video content based on object detection data.
 
 VIDEO CONTEXT:
 Recording Duration: {detection_summary.get('recording_duration', 0):.1f} seconds
@@ -423,10 +422,9 @@ ACTIVITY PATTERNS:
 ANALYSIS TASK: {question}
 
 Please provide:
-1. A concise summary of the main scene
-2. Analysis of object interactions and activities
-3. Notable patterns or anomalies
-4. Answer to the specific question
+1. An analysis of the  dental disease detcted and how to treat it or avoid it
+2. Notable patterns or anomalies
+3. Answer to the specific question
 
 Reason step by step and be factual based on the detection data:"""
 
@@ -491,7 +489,7 @@ Reason step by step and be factual based on the detection data:"""
         if not patterns_printed:
             print("   No significant patterns detected")
 
-        print(f"\n🧠 DEEPSEEK ANALYSIS:")
+        print(f"\nANALYSIS:")
         print(f"{results['analysis']}")
 
         print(f"\n⏱️  Processing time: {results['processing_time_seconds']}s")
@@ -500,7 +498,7 @@ Reason step by step and be factual based on the detection data:"""
         """Save analysis results to JSON file"""
         with open(filename, 'w', encoding='utf-8') as f:
             json.dump(results, f, indent=2, ensure_ascii=False)
-        print(f"✅ Analysis report saved to {filename}")
+        print(f"Analysis report saved to {filename}")
 
     def get_recording_status(self) -> Dict[str, Any]:
         """Get current recording status and statistics"""
@@ -523,7 +521,7 @@ def main():
     """Main function demonstrating the refined pipeline"""
     # Initialize the reasoner
     reasoner = UnifiedVideoReasoner(
-        yolo_model="yolov8n.pt",
+        yolo_model="./models/yolo8.pt",
         ollama_base_url="http://localhost:11434",
         deepseek_model="deepseek-r1:1.5b"
     )
@@ -541,7 +539,6 @@ def main():
     while True:
         print("\n📋 MAIN MENU:")
         print("1. Start Preview (Manual Recording Control)")
-        print("2. Start Preview with Duration (Auto-stop recording)")
         print("3. Analyze Last Recording")
         print("4. Interactive Analysis Session")
         print("5. Show Recording Status")
@@ -565,22 +562,17 @@ def main():
                 output_path=output_file
             )
 
-        elif choice == "2":
-            # Preview with duration
-            duration = int(input("Enter recording duration in seconds (default: 10): ") or "10")
-            output_file = input("Enter output filename (default: recorded_video.mp4): ").strip()
-            if not output_file:
-                output_file = "recorded_video.mp4"
+            # Show status
+            status = reasoner.get_recording_status()
+            print(f"\n📊 CURRENT STATUS:")
+            print(f"   Preview Active: {status['is_previewing']}")
+            print(f"   Recording Active: {status['is_recording']}")
+            print(f"   Processing Active: {status['is_processing']}")
+            print(f"   Objects Detected: {status['detection_history_size']} types")
+            print(f"   Frames in Buffer: {status['frame_buffer_size']}")
 
-            print(f"\n🚀 Starting preview with {duration}s recording...")
-            print("   Press 's' to start recording (auto-stops after {duration}s)")
-            print("   Press 'q' to quit preview")
-
-            reasoner.start_preview_with_duration(
-                video_source=0,
-                duration=duration,
-                output_path=output_file
-            )
+            if status['is_recording']:
+                print(f"   Recording Time: {status['recording_elapsed']:.1f}s")
 
         elif choice == "3":
             # Analyze last recording
@@ -607,18 +599,6 @@ def main():
                 continue
             reasoner.interactive_analysis()
 
-        elif choice == "5":
-            # Show status
-            status = reasoner.get_recording_status()
-            print(f"\n📊 CURRENT STATUS:")
-            print(f"   Preview Active: {status['is_previewing']}")
-            print(f"   Recording Active: {status['is_recording']}")
-            print(f"   Processing Active: {status['is_processing']}")
-            print(f"   Objects Detected: {status['detection_history_size']} types")
-            print(f"   Frames in Buffer: {status['frame_buffer_size']}")
-
-            if status['is_recording']:
-                print(f"   Recording Time: {status['recording_elapsed']:.1f}s")
 
         elif choice == "6":
             print("👋 Exiting...")

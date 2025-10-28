@@ -1,0 +1,31 @@
+{
+  "analysis": "### Analysis Task:\n\nBased on the detected objects throughout the video, describe what was happening in the scene, the main activities, and any interesting patterns you observe.\n\n---\n\n**1. Analysis of the Dental Disease Detected:**\n\nThe video captures a dental setting with a continuous detection of **discoloration**, appearing 35 times over an 8.8-second recording with visibility for 6.2 seconds. The confidence level is 0.75, indicating a notable occurrence but not overly high risk.\n\n- **Possible",
+  "detection_summary": {
+    "total_objects_detected": 35,
+    "unique_object_types": 1,
+    "objects": [
+      {
+        "object": "Discoloration",
+        "count": 35,
+        "first_seen": 2.508931875228882,
+        "last_seen": 8.703031778335571,
+        "duration": 6.1940999031066895,
+        "avg_confidence": 0.7512007900646754,
+        "max_confidence": 0.9040858745574951
+      }
+    ],
+    "recording_duration": 8.76650595664978
+  },
+  "activity_patterns": {
+    "continuous_objects": [
+      "Discoloration"
+    ],
+    "transient_objects": [],
+    "frequent_objects": [
+      "Discoloration"
+    ],
+    "high_confidence_objects": []
+  },
+  "processing_time_seconds": 9.28,
+  "question": "Based on the objects detected throughout the video, describe what was happening in the scene, the main activities, and any interesting patterns you observe."
+}
