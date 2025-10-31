@@ -14,6 +14,11 @@ import traceback
 
 app = FastAPI()
 
+# Track active websocket connections per client IP to avoid connection floods from
+# accidental reconnect loops (dev reloads, misbehaving clients, etc.). This is a
+# simple safeguard for local development and can be replaced with a more
+# production-ready rate limiter or auth/limits.
+app.state.active_ws = {}
 STATIC_DIR = Path("static")
 IMAGES_DIR = STATIC_DIR / "images"
 
@@ -59,6 +64,32 @@ async def make_prediction(file: UploadFile = File(...)):
 
 @app.websocket("/ws/predict")
 async def websocket_predict(websocket: WebSocket):
+    # determine client host (ip) for connection tracking
+    client_host = "unknown"
+    try:
+        client_host = websocket.client[0]
+    except Exception:
+        pass
+
+    # If an existing websocket from this client IP is active, close it to
+    # avoid duplicate concurrent connections from the same client during dev
+    # (e.g. auto-reloads or reconnect loops).
+    try:
+        existing = app.state.active_ws.get(client_host)
+        if existing is not None and existing is not websocket:
+            try:
+                await existing.close()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # register this websocket for the client host
+    try:
+        app.state.active_ws[client_host] = websocket
+    except Exception:
+        pass
+
     await websocket.accept()
     frame_count = 0
     predict_every_frames = 5
@@ -204,4 +235,11 @@ async def websocket_predict(websocket: WebSocket):
         running = False
         if predictor_task:
             predictor_task.cancel()
-        print("WebSocket /ws/predict disconnected")
+        # remove from active map if still registered
+        try:
+            if app.state.active_ws.get(client_host) is websocket:
+                del app.state.active_ws[client_host]
+        except Exception:
+            pass
+
+        print("WebSocket /ws/predict disconnected from", client_host)
