@@ -1,0 +1,12 @@
+version: "3.8"
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000" # backend (uvicorn)
+      - "8501:8501" # frontend (streamlit)
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    volumes:
+      - ./:/app

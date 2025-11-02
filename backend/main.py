@@ -1,11 +1,11 @@
 from backend.function import predict, predict_from_bytes
 from fastapi import FastAPI, File, UploadFile
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 import secrets
 import os
 from pathlib import Path
 import json
-import io
 import base64
 from fastapi import WebSocket, WebSocketDisconnect
 import asyncio
@@ -14,10 +14,14 @@ import traceback
 
 app = FastAPI()
 
-# Track active websocket connections per client IP to avoid connection floods from
-# accidental reconnect loops (dev reloads, misbehaving clients, etc.). This is a
-# simple safeguard for local development and can be replaced with a more
-# production-ready rate limiter or auth/limits.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.state.active_ws = {}
 STATIC_DIR = Path("static")
 IMAGES_DIR = STATIC_DIR / "images"
